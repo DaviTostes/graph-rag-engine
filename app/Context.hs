@@ -58,7 +58,8 @@ data Context = Context
   { cId :: Int,
     title :: String,
     text :: String,
-    vector :: [Float]
+    titleVec :: [Float],
+    textVec :: [Float]
   }
   deriving (Show, Generic)
 
@@ -71,12 +72,14 @@ createContexts = do
   chunks <- readChunks
   embs <-
     mapM (\(content, _) -> postEmbedding content :: IO EmbeddingResponse) chunks
+  textEmbs <-
+    mapM (\(_, content) -> postEmbedding content :: IO EmbeddingResponse) chunks
 
-  let indexed = zip [0 ..] (zip chunks embs)
+  let indexed = zip [0 ..] (zip chunks (zip embs textEmbs))
 
   return
-    [ Context idx titlex textx (head (embeddings embx))
-      | (idx, ((titlex, textx), embx)) <- indexed
+    [ Context idx titlex textx (head (embeddings embx)) (head (embeddings textEmbx))
+      | (idx, ((titlex, textx), (embx, textEmbx))) <- indexed
     ]
 
 createContextsFile :: IO ()

@@ -7,7 +7,7 @@ import Data.Aeson
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BC
 import Data.Foldable (maximumBy)
-import Data.List (find, sortBy)
+import Data.List (sortBy)
 import Data.Ord
 import System.Environment (getArgs)
 
@@ -35,12 +35,12 @@ data Edge = Edge
   }
   deriving (Show)
 
-searchContext :: [Float] -> [Context] -> [Edge] -> String
-searchContext qV cts edgs = do
+searchContext :: [Float] -> [Context] -> [Edge] -> Float -> String
+searchContext qV cts edgs threshold = do
   let bestNode = maximumBy (comparing similarity) cts
       similarityScore = similarity bestNode
 
-  if similarityScore < queryThreshold
+  if similarityScore < threshold
     then ""
     else do
       let cText = text bestNode
@@ -49,18 +49,12 @@ searchContext qV cts edgs = do
       case edgesFromBest of
         [] -> cText
         _ -> do
-          let bestEdge = maximumBy (comparing score) edgesFromBest
-              nextNode = find (\e -> cId e == to bestEdge) cts
-
-          case nextNode of
-            Nothing -> cText
-            Just _ -> do
-              let unvisitedEdges = filter (\e -> to bestEdge /= to e) edgs
-              let unvisitedNodes = filter (\n -> cId bestNode /= cId n) cts
-                  rest = searchContext qV unvisitedNodes unvisitedEdges
-              cText ++ "\n" ++ rest
+          let nextCtxs = [c | c <- cts, e <- edgesFromBest, cId c == to e]
+              rest = searchContext qV nextCtxs edgs (threshold + 0.5)
+          cText ++ "\n" ++ rest
   where
-    similarity e = cosineSim qV (vector e)
+
+    similarity c = cosineSim qV (titleVec c)
 
 createGraphFile :: [Context] -> [Edge] -> IO ()
 createGraphFile cs es = do
@@ -85,17 +79,23 @@ main = do
       case args of
         [message] -> do
           response <- postEmbedding message :: IO EmbeddingResponse
+          let queryVec = head (embeddings response)
 
           let allEdges =
                 [ Edge
                     (cId c1)
                     (cId c2)
-                    (cosineSim (vector c1) (vector c2))
+                    (cosineSim (titleVec c1) (titleVec c2))
                   | c1 <- list,
                     c2 <- list,
                     cId c1 /= cId c2,
-                    cosineSim (vector c1) (vector c2) >= edgeTreshold
+                    cosineSim (titleVec c1) (titleVec c2) >= edgeTreshold
                 ]
 
-          putStrLn $ searchContext (head (embeddings response)) list allEdges
+          -- createGraphFile list allEdges
+
+          -- let sims = sortBy (comparing (Down . snd)) [(title c, cosineSim queryVec (titleVec c)) | c <- list]
+          -- mapM_ (\(c, s) -> putStrLn $ "[" ++ c ++ "] -> " ++ show s) sims
+
+          putStrLn $ searchContext queryVec list allEdges queryThreshold
         _ -> putStrLn "Usage ./r"
