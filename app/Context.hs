@@ -7,22 +7,23 @@ import Control.Monad (filterM)
 import Control.Monad.IO.Class
 import Data.Aeson
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.Text.Lazy as TL
 import GHC.Generics
 import Network.HTTP.Req
 import System.Directory (doesFileExist, listDirectory)
 import System.FilePath (takeFileName, (</>))
 
-readChunks :: IO [(FilePath, String)]
+readChunks :: IO [(String, String)]
 readChunks = do
   let dir = "assets/chunks"
   files <- listDirectory dir
   let paths = map (dir </>) files
-      fileNames = map takeFileName paths
+      fileNames = map (TL.replace "_" " " . TL.pack . takeFileName) paths
 
   filePaths <- filterM doesFileExist paths
 
   contents <- mapM readFile filePaths
-  return (zip fileNames contents)
+  return (zip (map TL.unpack fileNames) contents)
 
 newtype EmbeddingResponse = EmbeddingResponse
   { embeddings :: [[Float]]

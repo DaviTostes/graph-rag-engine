@@ -7,15 +7,17 @@ import Data.Aeson
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BC
 import Data.Foldable (maximumBy)
-import Data.List (sortBy)
+import Data.List (sort, sortBy)
 import Data.Ord
 import System.Environment (getArgs)
 
 edgeTreshold :: Float
 edgeTreshold = 0.85
 
-queryThreshold :: Float
-queryThreshold = 0.7
+queryThreshold :: Float -> Float
+queryThreshold t
+  | t < 0.6 = t
+  | otherwise = 0.7
 
 cosineSim :: [Float] -> [Float] -> Float
 cosineSim a b
@@ -35,28 +37,21 @@ data Edge = Edge
   }
   deriving (Show)
 
-searchContext :: [Float] -> [Context] -> [Edge] -> Float -> String
-searchContext qV cts edgs threshold = do
-  let bestNode = maximumBy (comparing similarity) cts
-      similarityScore = similarity bestNode
+percentile :: Float -> [Float] -> Float
+percentile p xs
+  | null xs = error "Empty list"
+  | p < 0 || p > 100 = error "Percentile must be between 0 and 100"
+  | otherwise =
+      let sorted = sort xs
+          n = fromIntegral (length xs)
+          rank = p / 100 * (n - 1)
+          i = floor rank
+          frac = rank - fromIntegral i
+          x1 = sorted !! i
+          x2 = sorted !! min (i + 1) (length sorted - 1)
+       in x1 + frac * (x2 - x1)
 
-  if similarityScore < threshold
-    then ""
-    else do
-      let cText = text bestNode
-          edgesFromBest = [e | e <- edgs, from e == cId bestNode]
-
-      case edgesFromBest of
-        [] -> cText
-        _ -> do
-          let nextCtxs = [c | c <- cts, e <- edgesFromBest, cId c == to e]
-              rest = searchContext qV nextCtxs edgs (threshold + 0.5)
-          cText ++ "\n" ++ rest
-  where
-
-    similarity c = cosineSim qV (titleVec c)
-
-createGraphFile :: [Context] -> [Edge] -> IO ()
+createGraphFile :: [Context.Context] -> [Edge] -> IO ()
 createGraphFile cs es = do
   let txt = unlines $ map (\c -> printNode c ++ unlines (printNodeEdges c)) cs
       bs = BC.pack txt
@@ -69,16 +64,43 @@ createGraphFile cs es = do
           nodes = [(c', e) | c' <- cs, e <- nodeEdges, cId c' == to e]
        in map (uncurry printEdge) (sortBy (flip $ \(_, e1) (_, e2) -> compare (score e1) (score e2)) nodes)
 
+searchContext :: [Float] -> [Context.Context] -> [Edge] -> Float -> String
+searchContext qV cts edgs threshold = do
+  case findBestNode of
+    Nothing -> ""
+    Just bestNode -> 
+      let similarityScore = similarity bestNode
+      in if similarityScore < threshold
+        then ""
+        else do
+          let cText = text bestNode
+              edgesFromBest = [e | e <- edgs, from e == cId bestNode]
+          case edgesFromBest of
+            [] -> cText
+            _ -> do
+              let nextCtxs = [c | c <- cts, e <- edgesFromBest, cId c == to e]
+                  queryPercentile = percentile 90 (map score edgesFromBest)
+                  threshold' = queryThreshold queryPercentile
+                  rest = searchContext qV nextCtxs edgs threshold'
+              cText ++ "\n" ++ show queryPercentile ++ "\n" ++ rest
+  where
+    similarity c = cosineSim qV (titleVec c)
+    findBestNode =
+      if null cts
+        then Nothing
+        else Just $ maximumBy (comparing similarity) cts
+
 main :: IO ()
 main = do
+  -- Context.createContextsFile
   content <- BL.readFile "assets/contexts.json"
-  case eitherDecode content :: Either String [Context] of
+  case eitherDecode content :: Either String [Context.Context] of
     Left err -> putStrLn $ "Error parsing JSON" ++ err
     Right list -> do
       args <- getArgs
       case args of
-        [message] -> do
-          response <- postEmbedding message :: IO EmbeddingResponse
+        [query] -> do
+          response <- Context.postEmbedding query :: IO Context.EmbeddingResponse
           let queryVec = head (embeddings response)
 
           let allEdges =
@@ -94,8 +116,13 @@ main = do
 
           -- createGraphFile list allEdges
 
-          -- let sims = sortBy (comparing (Down . snd)) [(title c, cosineSim queryVec (titleVec c)) | c <- list]
-          -- mapM_ (\(c, s) -> putStrLn $ "[" ++ c ++ "] -> " ++ show s) sims
+          let sims = [(title c, cosineSim queryVec (titleVec c)) | c <- list]
+              queryPercentile = percentile 90 (map snd sims)
+              threshold = queryThreshold queryPercentile
 
-          putStrLn $ searchContext queryVec list allEdges queryThreshold
+          -- print queryPercentile
+          -- print threshold
+          -- mapM_ (\(c, s) -> putStrLn $ "[" ++ c ++ "] -> " ++ show s) (sortBy (comparing (Down . snd)) sims)
+
+          putStrLn $ searchContext queryVec list allEdges threshold
         _ -> putStrLn "Usage ./r"
